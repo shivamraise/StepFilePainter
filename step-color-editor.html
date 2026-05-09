@@ -1,0 +1,1036 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<title>STEP Face Color Editor</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #000; color: #f5f5f7; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; font-size: 13px; display: flex; height: 100vh; overflow: hidden; -webkit-font-smoothing: antialiased; }
+#sidebar { width: 272px; min-width: 272px; background: rgba(28,28,30,0.96); border-right: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; overflow: hidden; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+#sidebar-header { padding: 16px 16px 12px; border-bottom: 1px solid rgba(255,255,255,0.07); }
+#sidebar-header h1 { font-size: 15px; font-weight: 600; color: #f5f5f7; letter-spacing: -0.01em; }
+#sidebar-header span { color: rgba(235,235,245,0.4); font-size: 11px; display: block; font-weight: 400; margin-top: 2px; letter-spacing: 0; }
+.section { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.section label { display: block; font-size: 10px; font-weight: 500; color: rgba(235,235,245,0.4); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.06em; }
+#drop-zone { border: 1.5px dashed rgba(255,255,255,0.18); border-radius: 10px; padding: 14px 10px; text-align: center; cursor: pointer; color: rgba(235,235,245,0.4); font-size: 12px; transition: all 0.15s; }
+#drop-zone:hover, #drop-zone.drag-over { border-color: #0a84ff; color: #0a84ff; background: rgba(10,132,255,0.06); }
+#drop-zone input { display: none; }
+
+#active-color-wrap { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+#active-swatch { width: 32px; height: 26px; border-radius: 6px; border: 1.5px solid rgba(255,255,255,0.15); flex-shrink: 0; }
+#active-swatch-hex { width: 80px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 7px; color: #f5f5f7; padding: 5px 8px; font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; outline: none; flex-shrink: 0; }
+#active-swatch-hex:focus { border-color: #0a84ff; background: rgba(10,132,255,0.08); }
+#cpick-wrap { margin-bottom: 10px; user-select: none; }
+#cpick-sv { width: 100%; height: 150px; border-radius: 8px; cursor: crosshair; display: block; }
+#cpick-hue { width: 100%; height: 14px; border-radius: 7px; cursor: crosshair; display: block; margin-top: 6px; }
+.presets { display: flex; gap: 5px; flex-wrap: wrap; }
+.preset { width: 22px; height: 22px; border-radius: 5px; border: 1.5px solid rgba(255,255,255,0.1); cursor: pointer; transition: transform 0.1s; }
+.preset:hover { transform: scale(1.2); border-color: rgba(255,255,255,0.3); }
+.preset.active-preset { border: 2px solid #0a84ff; box-shadow: 0 0 0 1px rgba(10,132,255,0.4); }
+#color-palette { display: flex; flex-direction: column; gap: 3px; max-height: 200px; overflow-y: auto; }
+#color-palette::-webkit-scrollbar { width: 3px; }
+#color-palette::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+.pal-item { display: flex; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 7px; cursor: pointer; border: 1px solid transparent; transition: background 0.1s; }
+.pal-item:hover { background: rgba(255,255,255,0.05); }
+.pal-item.pal-active { background: rgba(10,132,255,0.12); border-color: rgba(10,132,255,0.3); }
+.pal-swatch { width: 20px; height: 20px; border-radius: 5px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.12); }
+.pal-hex { font-size: 11px; color: rgba(235,235,245,0.55); flex: 1; font-family: 'SF Mono', 'Menlo', monospace; }
+.pal-count { font-size: 10px; color: rgba(235,235,245,0.25); }
+.pal-recolor { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.1); color: rgba(235,235,245,0.5); border-radius: 5px; padding: 2px 7px; font-size: 10px; cursor: pointer; font-family: inherit; transition: all 0.12s; }
+.pal-recolor:hover { background: rgba(10,132,255,0.15); border-color: rgba(10,132,255,0.4); color: #0a84ff; }
+#paint-hint { font-size: 10px; color: rgba(235,235,245,0.25); margin-top: 7px; line-height: 1.5; }
+
+#face-list { flex: 1; overflow-y: auto; }
+#face-list::-webkit-scrollbar { width: 4px; }
+#face-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); }
+.face-item { display: flex; align-items: center; gap: 8px; padding: 6px 16px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 12px; }
+.face-item:hover { background: rgba(255,255,255,0.04); }
+.face-item.selected { background: rgba(10,132,255,0.12); color: #0a84ff; }
+.face-swatch { width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.15); flex-shrink: 0; }
+.log-ok { color: #30d158; } .log-warn { color: #ff9f0a; } .log-err { color: #ff453a; }
+
+#canvas-wrap { flex: 1; position: relative; cursor: default; }
+canvas { display: block; width: 100%; height: 100%; }
+#toolbar { position: absolute; top: 12px; right: 12px; display: flex; flex-direction: column; gap: 4px; }
+.tbtn { background: rgba(44,44,46,0.85); border: 1px solid rgba(255,255,255,0.1); color: rgba(235,235,245,0.75); border-radius: 9px; padding: 6px 12px; cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); transition: all 0.12s; letter-spacing: -0.01em; }
+.tbtn:hover:not(:disabled) { background: rgba(58,58,60,0.9); border-color: rgba(255,255,255,0.18); color: #f5f5f7; }
+.tbtn.on { background: rgba(10,132,255,0.2); border-color: rgba(10,132,255,0.5); color: #0a84ff; }
+.tbtn:disabled { opacity: 0.3; cursor: default; }
+#hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); background: rgba(28,28,30,0.8); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 6px 18px; font-size: 11px; color: rgba(235,235,245,0.35); pointer-events: none; white-space: nowrap; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+#overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(8px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+.spinner { width: 32px; height: 32px; border: 2.5px solid rgba(255,255,255,0.1); border-top-color: #0a84ff; border-radius: 50%; animation: spin 0.75s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#overlay-text { color: #f5f5f7; font-size: 14px; font-weight: 500; }
+#overlay-sub { color: rgba(235,235,245,0.4); font-size: 12px; }
+#fav-colors { display: flex; gap: 5px; flex-wrap: wrap; min-height: 22px; }
+.fav-swatch { width: 22px; height: 22px; border-radius: 5px; border: 1.5px solid rgba(255,255,255,0.1); cursor: pointer; transition: transform 0.1s; }
+.fav-swatch:hover { transform: scale(1.15); border-color: rgba(255,255,255,0.3); }
+#btn-fav-add { background: rgba(255,255,255,0.06); border: 1.5px dashed rgba(255,255,255,0.18); border-radius: 5px; width: 22px; height: 22px; cursor: pointer; color: rgba(235,235,245,0.4); font-size: 14px; display: flex; align-items: center; justify-content: center; transition: all 0.12s; flex-shrink: 0; padding: 0; }
+#btn-fav-add:hover { border-color: #0a84ff; color: #0a84ff; background: rgba(10,132,255,0.08); }
+#btn-fav-save { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 5px; color: rgba(235,235,245,0.45); padding: 2px 7px; font-family: inherit; font-size: 10px; font-weight: 500; cursor: pointer; transition: all 0.12s; }
+#btn-fav-save:hover { background: rgba(10,132,255,0.15); border-color: rgba(10,132,255,0.4); color: #0a84ff; }
+#palette-count { color: #0a84ff !important; }
+</style>
+<script id="favorites-data" type="application/json">["#c7c7c7","#4d4d4d"]</script>
+</head>
+<body>
+<div id="sidebar">
+  <div id="sidebar-header"><h1>STEP Color Editor</h1><span>OpenCascade · Face Painter</span></div>
+  <div class="section">
+    <label>File</label>
+    <div id="drop-zone">Drop .stp / .step here<br>or click to browse<input type="file" id="file-input" accept=".stp,.step,.p21"></div>
+  </div>
+  <div class="section">
+    <label>Active Color — right-click face to paint</label>
+    <div id="active-color-wrap">
+      <div id="active-swatch"></div>
+      <input type="text" id="active-swatch-hex" value="#4488ff" maxlength="7" spellcheck="false">
+      <button class="tbtn" id="btn-paint-all" disabled="">Paint all</button>
+    </div>
+    <div id="cpick-wrap">
+      <canvas id="cpick-sv"></canvas>
+      <canvas id="cpick-hue"></canvas>
+    </div>
+    <div class="presets" id="presets"></div>
+    <div id="fav-row" style="display:flex;align-items:center;gap:5px;margin-top:8px;flex-wrap:wrap;">
+      <span style="font-size:10px;font-weight:500;color:rgba(235,235,245,0.35);text-transform:uppercase;letter-spacing:0.06em;flex-shrink:0;">Favorites</span>
+      <div id="fav-colors" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
+      <button id="btn-fav-add" title="Add current color to favorites">+</button>
+      <button id="btn-fav-save" title="Save favorites to this file" style="margin-left:auto;">Save</button>
+    </div>
+    <div id="paint-hint">Right-click · drag to paint · Ctrl+Z/Y undo/redo</div>
+  </div>
+  <div id="color-palette-section" class="section" style="display:none;">
+    <label>Colors <span id="palette-count" style="float:right;text-transform:none;letter-spacing:0;"></span></label>
+    <div id="color-palette"></div>
+  </div>
+  <div style="flex:1;"></div>
+</div>
+<div id="canvas-wrap">
+  <canvas id="viewport" width="1509" height="1905" style="width: 1006px; height: 1270px;"></canvas>
+  <div id="overlay">
+    <div class="spinner"></div>
+    <div id="overlay-text">Loading OpenCascade...</div>
+    <div id="overlay-sub">May take a few seconds on first load</div>
+  </div>
+  <div id="toolbar">
+    <button class="tbtn on" id="btn-ortho">Perspective</button>
+    <button class="tbtn" id="btn-wire">Wireframe</button>
+    <button class="tbtn on" id="btn-edges">Edges</button>
+    <button class="tbtn" id="btn-hide" disabled="">Hide face</button>
+    <button class="tbtn" id="btn-showall">Show all</button>
+    <button class="tbtn" id="btn-home">Reset view</button>
+    <button class="tbtn" id="btn-export" disabled="">Export STEP</button>
+  </div>
+  <div id="hint">Left-drag: pan · Middle-drag: orbit · Scroll: zoom · Right-click/drag: paint</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ── Log (silent) ─────────────────────────────────────────────
+function log(){}
+
+// ── Undo / redo ───────────────────────────────────────────────
+const undoStack=[], redoStack=[];
+function pushUndo(faceIdx, prevColor, nextColor){
+  undoStack.push({faceIdx, prevColor, nextColor});
+  redoStack.length=0; // clear redo on new action
+}
+function undo(){
+  if(!undoStack.length) return;
+  const entry=undoStack.pop();
+  if(entry.bulk){
+    // Bulk: array of {faceIdx,prevColor,nextColor}
+    entry.changes.forEach(({faceIdx,prevColor})=>applyColor(faceIdx,prevColor,false));
+    redoStack.push(entry);
+  } else {
+    redoStack.push({faceIdx:entry.faceIdx,prevColor:entry.prevColor,nextColor:entry.nextColor});
+    applyColor(entry.faceIdx,entry.prevColor,false);
+  }
+}
+function redo(){
+  if(!redoStack.length) return;
+  const entry=redoStack.pop();
+  if(entry.bulk){
+    entry.changes.forEach(({faceIdx,nextColor})=>applyColor(faceIdx,nextColor,false));
+    undoStack.push(entry);
+  } else {
+    undoStack.push({faceIdx:entry.faceIdx,prevColor:entry.prevColor,nextColor:entry.nextColor});
+    applyColor(entry.faceIdx,entry.nextColor,false);
+  }
+}
+function applyColor(idx, hex, pushHistory=true){
+  const prev=faces[idx].color;
+  if(pushHistory) pushUndo(idx, prev, hex);
+  faces[idx].color=hex;
+  faces[idx].userColored=(hex!==faces[idx].defaultColor);
+  faces[idx].mesh.material.color.set(hex);
+  updatePalette(prev, hex, idx);
+}
+
+// ── Color palette ─────────────────────────────────────────────
+// Map: hex → Set of face indices using that color
+const colorMap=new Map();
+
+function initPalette(){
+  colorMap.clear();
+  for(let i=0;i<faces.length;i++){
+    const hex=faces[i].defaultColor||faces[i].color;
+    if(!colorMap.has(hex)) colorMap.set(hex,new Set());
+    colorMap.get(hex).add(i);
+    faces[i].color=hex; // reset to default on reload
+  }
+  renderPalette();
+}
+
+function updatePalette(prevHex, newHex, faceIdx){
+  // Remove from old color
+  if(colorMap.has(prevHex)){
+    colorMap.get(prevHex).delete(faceIdx);
+    if(colorMap.get(prevHex).size===0) colorMap.delete(prevHex);
+  }
+  // Add to new color
+  if(!colorMap.has(newHex)) colorMap.set(newHex,new Set());
+  colorMap.get(newHex).add(faceIdx);
+  renderPalette();
+}
+
+function renderPalette(){
+  const section=document.getElementById('color-palette-section');
+  const el=document.getElementById('color-palette');
+  const count=document.getElementById('palette-count');
+  if(!colorMap.size){section.style.display='none';return;}
+  section.style.display='';
+  count.textContent=colorMap.size;
+  el.innerHTML='';
+  // Sort by face count descending
+  const sorted=[...colorMap.entries()].sort((a,b)=>b[1].size-a[1].size);
+  for(const [hex,faceSet] of sorted){
+    const item=document.createElement('div');
+    item.className='pal-item';
+    item.innerHTML=`
+      <div class="pal-swatch" style="background:${hex}"></div>
+      <span class="pal-hex">${hex}</span>
+      <span class="pal-count">${faceSet.size}f</span>
+      <button class="pal-recolor">Set active</button>`;
+    // Click row = select active color
+    item.querySelector('.pal-recolor').onclick=e=>{
+      e.stopPropagation();
+      setActiveColor(hex);
+    };
+    // Click swatch = recolor all faces with this color to active color
+    item.querySelector('.pal-swatch').onclick=e=>{
+      e.stopPropagation();
+      const targets=[...faceSet];
+      const cur=activeColor;
+      const changes=targets
+        .map(i=>({faceIdx:i,prevColor:faces[i].color,nextColor:cur}))
+        .filter(c=>c.prevColor!==c.nextColor);
+      if(!changes.length) return;
+      changes.forEach(({faceIdx,nextColor})=>applyColor(faceIdx,nextColor,false));
+      undoStack.push({bulk:true,changes});
+      redoStack.length=0;
+    };
+    el.appendChild(item);
+  }
+}
+
+document.addEventListener('keydown',e=>{
+  if(e.ctrlKey&&e.key==='z'){e.preventDefault();undo();}
+  if(e.ctrlKey&&(e.key==='y'||e.key==='Z')){e.preventDefault();redo();}
+});
+
+// ── Custom HSV color picker ───────────────────────────────────
+let activeColor='#4488ff';
+const activeSwatch=document.getElementById('active-swatch');
+const activeHexEl=document.getElementById('active-swatch-hex');
+const presetsEl=document.getElementById('presets');
+const svCanvas=document.getElementById('cpick-sv');
+const hueCanvas=document.getElementById('cpick-hue');
+const svCtx=svCanvas.getContext('2d');
+const hueCtx=hueCanvas.getContext('2d');
+
+let cpH=220,cpS=0.73,cpV=1.0;
+const usedColors=new Map();
+let activePresetEl=null;
+
+function hexToHsv(hex){
+  const r=parseInt(hex.slice(1,3),16)/255,g=parseInt(hex.slice(3,5),16)/255,b=parseInt(hex.slice(5,7),16)/255;
+  const max=Math.max(r,g,b),min=Math.min(r,g,b),d=max-min;
+  let h=0,s=max?d/max:0,v=max;
+  if(d){if(max===r)h=((g-b)/d+6)%6;else if(max===g)h=(b-r)/d+2;else h=(r-g)/d+4;h*=60;}
+  return{h,s,v};
+}
+function hsvToHex(h,s,v){
+  const f=n=>{const k=(n+h/60)%6;return v-v*s*Math.max(0,Math.min(k,4-k,1));};
+  return'#'+[f(5),f(3),f(1)].map(x=>Math.round(x*255).toString(16).padStart(2,'0')).join('');
+}
+
+function drawSV(){
+  const w=svCanvas.width,h=svCanvas.height;
+  const gS=svCtx.createLinearGradient(0,0,w,0);
+  gS.addColorStop(0,'#fff');gS.addColorStop(1,`hsl(${cpH},100%,50%)`);
+  svCtx.fillStyle=gS;svCtx.fillRect(0,0,w,h);
+  const gV=svCtx.createLinearGradient(0,0,0,h);
+  gV.addColorStop(0,'transparent');gV.addColorStop(1,'#000');
+  svCtx.fillStyle=gV;svCtx.fillRect(0,0,w,h);
+  const cx=cpS*w,cy=(1-cpV)*h;
+  svCtx.beginPath();svCtx.arc(cx,cy,6,0,Math.PI*2);
+  svCtx.strokeStyle='#fff';svCtx.lineWidth=2;svCtx.stroke();
+  svCtx.beginPath();svCtx.arc(cx,cy,7,0,Math.PI*2);
+  svCtx.strokeStyle='rgba(0,0,0,0.5)';svCtx.lineWidth=1;svCtx.stroke();
+}
+function drawHue(){
+  const w=hueCanvas.width,h=hueCanvas.height;
+  const g=hueCtx.createLinearGradient(0,0,w,0);
+  for(let i=0;i<=6;i++)g.addColorStop(i/6,`hsl(${i*60},100%,50%)`);
+  hueCtx.fillStyle=g;hueCtx.fillRect(0,0,w,h);
+  const cx=(cpH/360)*w;
+  hueCtx.fillStyle='#fff';hueCtx.strokeStyle='rgba(0,0,0,0.5)';hueCtx.lineWidth=1;
+  hueCtx.beginPath();hueCtx.roundRect(cx-4,1,8,h-2,2);hueCtx.fill();hueCtx.stroke();
+}
+
+function resizePicker(){
+  const w=svCanvas.parentElement.parentElement.clientWidth-32;
+  if(w<10)return;
+  svCanvas.width=w;svCanvas.height=150;
+  hueCanvas.width=w;hueCanvas.height=14;
+  drawSV();drawHue();
+}
+
+function pickerChanged(){
+  const hex=hsvToHex(cpH,cpS,cpV);
+  activeColor=hex;
+  activeSwatch.style.background=hex;
+  activeHexEl.value=hex;
+  if(activePresetEl)activePresetEl.classList.remove('active-preset');
+  activePresetEl=usedColors.get(hex)||null;
+  if(activePresetEl)activePresetEl.classList.add('active-preset');
+}
+
+let draggingSV=false,draggingHue=false;
+svCanvas.addEventListener('mousedown',e=>{draggingSV=true;updateSV(e);e.preventDefault();e.stopPropagation();});
+hueCanvas.addEventListener('mousedown',e=>{draggingHue=true;updateHue(e);e.preventDefault();e.stopPropagation();});
+window.addEventListener('mousemove',e=>{if(draggingSV)updateSV(e);if(draggingHue)updateHue(e);});
+window.addEventListener('mouseup',()=>{draggingSV=false;draggingHue=false;});
+
+function updateSV(e){
+  const r=svCanvas.getBoundingClientRect();
+  cpS=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
+  cpV=1-Math.max(0,Math.min(1,(e.clientY-r.top)/r.height));
+  drawSV();pickerChanged();
+}
+function updateHue(e){
+  const r=hueCanvas.getBoundingClientRect();
+  cpH=Math.max(0,Math.min(359,((e.clientX-r.left)/r.width)*360));
+  drawSV();drawHue();pickerChanged();
+}
+
+function setActiveColor(hex,presetEl){
+  hex=hex.toLowerCase();
+  if(!/^#[0-9a-f]{6}$/.test(hex))return;
+  const hsv=hexToHsv(hex);cpH=hsv.h;cpS=hsv.s;cpV=hsv.v;
+  activeColor=hex;activeSwatch.style.background=hex;activeHexEl.value=hex;
+  drawSV();drawHue();
+  if(activePresetEl)activePresetEl.classList.remove('active-preset');
+  activePresetEl=presetEl||usedColors.get(hex)||null;
+  if(activePresetEl)activePresetEl.classList.add('active-preset');
+}
+
+function recordColor(hex){
+  hex=hex.toLowerCase();
+  if(usedColors.has(hex)){setActiveColor(hex,usedColors.get(hex));return;}
+  const d=document.createElement('div');
+  d.className='preset';d.style.background=hex;d.title=hex;
+  d.onclick=()=>setActiveColor(hex,d);
+  presetsEl.appendChild(d);
+  usedColors.set(hex,d);
+  setActiveColor(hex,d);
+}
+
+activeHexEl.addEventListener('input',()=>{
+  let v=activeHexEl.value.trim();
+  if(!v.startsWith('#'))v='#'+v;
+  if(/^#[0-9a-f]{6}$/i.test(v))setActiveColor(v.toLowerCase());
+});
+activeHexEl.addEventListener('blur',()=>{
+  if(!/^#[0-9a-f]{6}$/i.test(activeHexEl.value))activeHexEl.value=activeColor;
+});
+
+setTimeout(resizePicker,50);
+window.addEventListener('resize',resizePicker);
+
+// ── Three.js ─────────────────────────────────────────────────
+const canvas=document.getElementById('viewport');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setClearColor(0x1c1c1e);
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(50,1,0.01,100000);
+scene.add(new THREE.AmbientLight(0xffffff,0.92));
+const dl=new THREE.DirectionalLight(0xffffff,0.08);dl.position.set(1,2,3);scene.add(dl);
+
+let faces=[],selectedIdx=-1,modelGroup=null,wireOn=false,orthoOn=true;
+// Ortho camera sits at a fixed large distance so near plane never clips
+const ORTHO_CAM_DIST=1000;
+const orthoCamera=new THREE.OrthographicCamera(-5,5,5,-5,0.1,10000);
+let activeCamera=orthoCamera;
+
+// ── Camera ────────────────────────────────────────────────────
+// Keep a rotation matrix. Horizontal drag = rotate around world Y.
+// Vertical drag = rotate around camera's current X axis.
+// This is exactly how Maya/Blender tumble works — no poles, no flip.
+let camDist=10;
+let camTarget=new THREE.Vector3();
+let camRotM=new THREE.Matrix4().makeRotationX(0.5).premultiply(new THREE.Matrix4().makeRotationY(0.6));
+
+function tbUpdate(){
+  // Perspective camera: position at camDist from target
+  const pos=new THREE.Vector3(0,0,camDist).applyMatrix4(camRotM);
+  camera.position.copy(camTarget).add(pos);
+  camera.lookAt(camTarget);
+  camera.up.set(camRotM.elements[4],camRotM.elements[5],camRotM.elements[6]);
+  // Scale near plane with distance so it never clips when zoomed in
+  camera.near=camDist*0.001;
+  camera.far=camDist*100+1000;
+  camera.updateProjectionMatrix();
+
+  // Ortho camera: always sits at ORTHO_CAM_DIST so near plane never clips
+  // Only the frustum size changes to simulate zoom (camDist drives apparent size)
+  const orthoPos=new THREE.Vector3(0,0,ORTHO_CAM_DIST).applyMatrix4(camRotM);
+  orthoCamera.position.copy(camTarget).add(orthoPos);
+  orthoCamera.quaternion.copy(camera.quaternion);
+  orthoCamera.up.copy(camera.up);
+  const aspect=camera.aspect||1;
+  const orthoH=camDist*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))*2;
+  const orthoW=orthoH*aspect;
+  orthoCamera.left=-orthoW/2; orthoCamera.right=orthoW/2;
+  orthoCamera.top=orthoH/2; orthoCamera.bottom=-orthoH/2;
+  orthoCamera.near=1; orthoCamera.far=ORTHO_CAM_DIST*2+1000;
+  orthoCamera.updateProjectionMatrix();
+}
+tbUpdate();
+
+function resetCamera(){
+  camDist=10; camTarget.set(0,0,0);
+  camRotM.makeRotationX(0.5).premultiply(new THREE.Matrix4().makeRotationY(0.6));
+  tbUpdate();
+}
+
+// ── Input handling ────────────────────────────────────────────
+let mouseState={down:false,button:-1,startX:0,startY:0,lastX:0,lastY:0,moved:false};
+
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+canvas.addEventListener('mousedown',e=>{
+  mouseState={down:true,button:e.button,startX:e.clientX,startY:e.clientY,lastX:e.clientX,lastY:e.clientY,moved:false};
+  if(e.button===2){e.preventDefault();doPaint(e);}
+});
+window.addEventListener('mousemove',e=>{
+  const totalDx=e.clientX-mouseState.startX, totalDy=e.clientY-mouseState.startY;
+  if(Math.abs(totalDx)>3||Math.abs(totalDy)>3) mouseState.moved=true;
+  const dx=e.clientX-mouseState.lastX, dy=e.clientY-mouseState.lastY;
+  mouseState.lastX=e.clientX; mouseState.lastY=e.clientY;
+  if(!mouseState.down) return;
+
+  if(mouseState.button===1){
+    // Always rotate around camera's OWN axes so drag matches screen at any orientation
+    // Horizontal dx → rotate around camera's current Y axis (column 1)
+    // Vertical dy → rotate around camera's current X axis (column 0)
+    const cx=new THREE.Vector3(camRotM.elements[0],camRotM.elements[1],camRotM.elements[2]);
+    const cy=new THREE.Vector3(camRotM.elements[4],camRotM.elements[5],camRotM.elements[6]);
+    const rx=new THREE.Matrix4().makeRotationAxis(cx,-dy*0.007);
+    const ry=new THREE.Matrix4().makeRotationAxis(cy,-dx*0.007);
+    camRotM.premultiply(rx).premultiply(ry);
+    tbUpdate();
+  } else if(mouseState.button===0){
+    const panSpeed=camDist*0.001;
+    // Pan along camera X and Y axes
+    const cx=new THREE.Vector3(camRotM.elements[0],camRotM.elements[1],camRotM.elements[2]);
+    const cy=new THREE.Vector3(camRotM.elements[4],camRotM.elements[5],camRotM.elements[6]);
+    camTarget.addScaledVector(cx,-dx*panSpeed).addScaledVector(cy,dy*panSpeed);
+    tbUpdate();
+  } else if(mouseState.button===2){
+    doPaint(e);
+  }
+});
+window.addEventListener('mouseup',e=>{
+  if(!mouseState.moved){
+    if(mouseState.button===0) doSelect(e);
+  }
+  mouseState.down=false;
+});
+canvas.addEventListener('wheel',e=>{
+  const zoomFactor=1+e.deltaY*0.001;
+  const rect=canvas.getBoundingClientRect();
+  const ndcX=((e.clientX-rect.left)/rect.width)*2-1;
+  const ndcY=-((e.clientY-rect.top)/rect.height)*2+1;
+  if(orthoOn){
+    // In ortho mode zoom by scaling camDist (which drives frustum size)
+    camDist=Math.max(0.01,camDist*zoomFactor);
+  } else {
+    // Find the 3D point under the cursor, then zoom toward it
+    const ray=new THREE.Ray();
+    ray.origin.copy(camera.position);
+    ray.direction.set(ndcX,ndcY,-1).applyMatrix4(camera.projectionMatrixInverse).applyMatrix4(camera.matrixWorld).sub(camera.position).normalize();
+    // Point on ray at current camDist
+    const mouseWorld=ray.origin.clone().addScaledVector(ray.direction,camDist);
+    // Shift target toward mouseWorld so zoom feels centered on cursor
+    const newDist=Math.max(0.01,camDist*zoomFactor);
+    const shift=1-newDist/camDist;
+    camTarget.addScaledVector(mouseWorld.sub(camTarget),shift);
+    camDist=newDist;
+  }
+  tbUpdate();
+  e.preventDefault();
+},{passive:false});
+
+function getHitFromXY(cx,cy){
+  if(!faces.length) return null;
+  const rect=canvas.getBoundingClientRect();
+  const mouse=new THREE.Vector2(((cx-rect.left)/rect.width)*2-1,-((cy-rect.top)/rect.height)*2+1);
+  const rc=new THREE.Raycaster();
+  rc.setFromCamera(mouse,activeCamera);
+  const hits=rc.intersectObjects(faces.map(f=>f.mesh).filter(m=>m.visible),false);
+  if(!hits.length) return null;
+  return faces.findIndex(f=>f.mesh===hits[0].object);
+}
+
+function getHit(e){return getHitFromXY(e.clientX,e.clientY);}
+
+function doSelect(e){
+  const idx=getHit(e);
+  if(idx===null||idx<0) return;
+  selectFace(idx);
+}
+
+function doPaint(e){
+  const idx=getHit(e);
+  if(idx===null||idx<0) return;
+  paintFace(idx,activeColor);
+}
+
+function selectFace(idx){
+  // Selection is just for hide/show — no visual highlight
+  selectedIdx=idx;
+  document.getElementById('btn-hide').disabled=false;
+}
+
+let hoveredIdx=-1;
+function setHover(idx){
+  if(hoveredIdx===idx) return;
+  if(hoveredIdx>=0){
+    faces[hoveredIdx].mesh.material.emissive.setHex(0x000000);
+    faces[hoveredIdx].mesh.material.emissiveIntensity=0;
+  }
+  hoveredIdx=idx;
+  if(idx>=0){
+    faces[idx].mesh.material.emissive.setHex(0xffffff);
+    faces[idx].mesh.material.emissiveIntensity=0.12;
+  }
+}
+
+// Continuous hover tracking
+canvas.addEventListener('mousemove',e=>{
+  if(mouseState.down) return; // don't hover-highlight while dragging
+  const idx=getHitFromXY(e.clientX,e.clientY);
+  setHover(idx===null?-1:idx);
+});
+canvas.addEventListener('mouseleave',()=>setHover(-1));
+
+function paintFace(idx,hex){
+  if(idx===null||idx<0) return;
+  hex=hex.toLowerCase();
+  if(faces[idx].color===hex) return; // no-op
+  applyColor(idx, hex);
+  recordColor(hex);
+}
+
+// Paint-all button
+document.getElementById('btn-paint-all').onclick=()=>{
+  const changes=faces
+    .map((f,i)=>({faceIdx:i,prevColor:f.color,nextColor:activeColor}))
+    .filter(c=>c.prevColor!==c.nextColor);
+  if(!changes.length) return;
+  changes.forEach(({faceIdx,nextColor})=>applyColor(faceIdx,nextColor,false));
+  undoStack.push({bulk:true,changes});
+  redoStack.length=0;
+  recordColor(activeColor);
+};
+
+// ── Toolbar ───────────────────────────────────────────────────
+let edgesOn=true;
+document.getElementById('btn-home').onclick=resetCamera;
+document.getElementById('btn-ortho').onclick=function(){orthoOn=!orthoOn;activeCamera=orthoOn?orthoCamera:camera;this.classList.toggle('on',orthoOn);this.textContent=orthoOn?'Perspective':'Ortho';tbUpdate();};
+document.getElementById('btn-wire').onclick=function(){wireOn=!wireOn;this.classList.toggle('on',wireOn);faces.forEach(f=>f.mesh.material.wireframe=wireOn);};
+document.getElementById('btn-edges').onclick=function(){edgesOn=!edgesOn;this.classList.toggle('on',edgesOn);faces.forEach(f=>{const el=f.mesh.children[0];if(el)el.visible=edgesOn;});};
+document.getElementById('btn-hide').onclick=()=>{
+  if(selectedIdx<0)return;
+  const f=faces[selectedIdx];f.mesh.visible=!f.mesh.visible;
+  document.getElementById('btn-hide').textContent=f.mesh.visible?'Hide face':'Show face';
+};
+document.getElementById('btn-showall').onclick=()=>{
+  faces.forEach(f=>f.mesh.visible=true);
+  document.getElementById('btn-hide').textContent='Hide face';
+};
+
+// ── Resize / render ───────────────────────────────────────────
+function resize(){const w=canvas.parentElement.clientWidth,h=canvas.parentElement.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();tbUpdate();}
+window.addEventListener('resize',resize);resize();
+(function loop(){requestAnimationFrame(loop);renderer.render(scene,activeCamera);})();
+
+// ── OCCT ─────────────────────────────────────────────────────
+const overlay=document.getElementById('overlay');
+const overlayText=document.getElementById('overlay-text');
+let occt=null;
+
+function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement('script');s.src=src;s.onload=res;s.onerror=()=>rej(new Error('Failed: '+src));document.head.appendChild(s);});}
+
+async function initOcct(){
+  try{
+    log('Loading OpenCascade...');
+    await loadScript('https://cdn.jsdelivr.net/npm/occt-import-js@0.0.22/dist/occt-import-js.min.js');
+    overlayText.textContent='Initializing WASM...';
+    occt=await occtimportjs({locateFile:f=>`https://cdn.jsdelivr.net/npm/occt-import-js@0.0.22/dist/${f}`});
+    log('OpenCascade ready','log-ok');
+    overlay.style.display='none';
+  }catch(err){
+    log('OpenCascade failed: '+err.message,'log-err');
+    overlay.style.display='none';
+  }
+}
+
+// ── File input ────────────────────────────────────────────────
+const dropZone=document.getElementById('drop-zone'),fileInput=document.getElementById('file-input');
+dropZone.onclick=()=>fileInput.click();
+fileInput.onchange=e=>{if(e.target.files[0])readFile(e.target.files[0]);};
+dropZone.ondragover=e=>{e.preventDefault();dropZone.classList.add('drag-over');};
+dropZone.ondragleave=()=>dropZone.classList.remove('drag-over');
+dropZone.ondrop=e=>{e.preventDefault();dropZone.classList.remove('drag-over');if(e.dataTransfer.files[0])readFile(e.dataTransfer.files[0]);};
+
+let rawText='';
+
+function readFile(file){
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    const buf=new Uint8Array(ev.target.result);
+    rawText=new TextDecoder().decode(buf);
+    loadStepFile(buf,file.name);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function loadStepFile(buffer,filename){
+  if(!occt){log('OCCT not ready','log-err');return;}
+  overlay.style.display='flex';
+  overlayText.textContent='Tessellating...';
+  log(`Loading ${filename} (${(buffer.byteLength/1024).toFixed(0)} KB)...`);
+  await new Promise(r=>setTimeout(r,20));
+  try{
+    const result=occt.ReadStepFile(buffer,null);
+    if(!result||!result.success){log('OCCT failed to parse','log-err');overlay.style.display='none';return;}
+    
+    for(const m of result.meshes){
+      const bf=m.brep_faces;
+      log(`Mesh "${m.name||'?'}": ${m.index?m.index.array.length/3:0} tris, ${bf?bf.length:0} faces`);
+    }
+    buildScene(result);
+  }catch(err){
+    log('Error: '+err.message,'log-err');
+    console.error(err);
+  }
+  overlay.style.display='none';
+}
+
+// ── Build scene ───────────────────────────────────────────────
+function buildScene(result){
+  if(modelGroup){scene.remove(modelGroup);modelGroup=null;}
+  faces=[];selectedIdx=-1;
+  document.getElementById('btn-hide').disabled=true;
+  modelGroup=new THREE.Group();
+
+  // Compute global bounds
+  let x0=Infinity,y0=Infinity,z0=Infinity,x1=-Infinity,y1=-Infinity,z1=-Infinity;
+  for(const m of result.meshes){
+    const p=m.attributes.position.array;
+    for(let i=0;i<p.length;i+=3){
+      if(p[i]<x0)x0=p[i];if(p[i]>x1)x1=p[i];
+      if(p[i+1]<y0)y0=p[i+1];if(p[i+1]>y1)y1=p[i+1];
+      if(p[i+2]<z0)z0=p[i+2];if(p[i+2]>z1)z1=p[i+2];
+    }
+  }
+  const cx=(x0+x1)/2,cy=(y0+y1)/2,cz=(z0+z1)/2;
+  const sc=6/Math.max(x1-x0,y1-y0,z1-z0,0.001);
+
+  let faceIdx=0;
+  for(const meshData of result.meshes){
+    const pos=meshData.attributes.position.array;
+    const nor=meshData.attributes.normal?meshData.attributes.normal.array:null;
+    const idxArr=meshData.index?meshData.index.array:null;
+
+    // Scale positions
+    const sp=new Float32Array(pos.length);
+    for(let i=0;i<pos.length;i+=3){sp[i]=(pos[i]-cx)*sc;sp[i+1]=(pos[i+1]-cy)*sc;sp[i+2]=(pos[i+2]-cz)*sc;}
+
+    const brepFaces=meshData.brep_faces;
+    if(brepFaces&&brepFaces.length>=1&&idxArr){
+      // Split per brep_face
+      for(let bfi=0;bfi<brepFaces.length;bfi++){
+        const bf=brepFaces[bfi];
+        const triStart=bf.first*3;
+        const triEnd=(bf.last+1)*3;
+        const fIdxSlice=idxArr.slice(triStart,triEnd);
+        if(!fIdxSlice.length)continue;
+
+        // Remap to compact vertex buffer
+        const used=new Set(fIdxSlice);
+        const verts=[...used].sort((a,b)=>a-b);
+        const remap=new Map(verts.map((v,i)=>[v,i]));
+        const fp=new Float32Array(verts.length*3);
+        const fn=nor?new Float32Array(verts.length*3):null;
+        for(let i=0;i<verts.length;i++){
+          const v=verts[i];
+          fp[i*3]=sp[v*3];fp[i*3+1]=sp[v*3+1];fp[i*3+2]=sp[v*3+2];
+          if(fn){fn[i*3]=nor[v*3];fn[i*3+1]=nor[v*3+1];fn[i*3+2]=nor[v*3+2];}
+        }
+        const fi=new Uint32Array(fIdxSlice.length);
+        for(let i=0;i<fIdxSlice.length;i++)fi[i]=remap.get(fIdxSlice[i]);
+
+        const geo=new THREE.BufferGeometry();
+        geo.setAttribute('position',new THREE.BufferAttribute(fp,3));
+        if(fn)geo.setAttribute('normal',new THREE.BufferAttribute(fn,3));
+        else geo.computeVertexNormals();
+        geo.setIndex(new THREE.BufferAttribute(fi,1));
+
+        const c=bf.color;
+        const col=c?rgbToHex(c[0],c[1],c[2]):'#aaaaaa';
+        const mat=new THREE.MeshPhongMaterial({color:col,side:THREE.DoubleSide,shininess:5,specular:0x0a0a0a,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
+        const mesh=new THREE.Mesh(geo,mat);
+        const edgeGeo=new THREE.EdgesGeometry(geo,30);
+        const edgeLine=new THREE.LineSegments(edgeGeo,new THREE.LineBasicMaterial({color:0x000000,opacity:0.7,transparent:true}));
+        mesh.add(edgeLine);
+        modelGroup.add(mesh);
+        faces.push({id:faceIdx,meshName:meshData.name||'',brepFaceIndex:bfi,globalFaceIdx:faceIdx,name:`Face ${faceIdx+1}`,mesh:modelGroup.children[modelGroup.children.length-1],color:col,defaultColor:col});
+        faceIdx++;
+      }
+    } else {
+      // Whole mesh as single face
+      const geo=new THREE.BufferGeometry();
+      geo.setAttribute('position',new THREE.BufferAttribute(sp,3));
+      if(nor)geo.setAttribute('normal',new THREE.BufferAttribute(new Float32Array(nor),3));
+      if(idxArr)geo.setIndex(new THREE.BufferAttribute(new Uint32Array(idxArr),1));
+      if(!nor)geo.computeVertexNormals();
+      const mat=new THREE.MeshPhongMaterial({color:'#aaaaaa',side:THREE.DoubleSide,shininess:5,specular:0x0a0a0a,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
+      const mesh=new THREE.Mesh(geo,mat);
+      const edgeGeo2=new THREE.EdgesGeometry(geo,30);
+      const edgeLine2=new THREE.LineSegments(edgeGeo2,new THREE.LineBasicMaterial({color:0x000000,opacity:0.7,transparent:true}));
+      mesh.add(edgeLine2);
+      modelGroup.add(mesh);
+      const col2=meshData.color?rgbToHex(meshData.color[0],meshData.color[1],meshData.color[2]):'#aaaaaa';
+      faces.push({id:faceIdx,meshName:meshData.name||'',brepFaceIndex:0,globalFaceIdx:faceIdx,name:meshData.name||`Face ${faceIdx+1}`,mesh:modelGroup.children[modelGroup.children.length-1],color:col2,defaultColor:col2});
+      faceIdx++;
+    }
+  }
+
+  scene.add(modelGroup);
+  resetCamera();
+  document.getElementById('btn-export').disabled=false;
+  document.getElementById('btn-paint-all').disabled=false;
+  undoStack.length=0; redoStack.length=0;
+
+  // Parse face colors directly from STEP text (handles OVER_RIDING_STYLED_ITEM
+  // which OCCT doesn't read back as bf.color)
+  applyStepColors();
+
+  initPalette();
+}
+
+function rgbToHex(r,g,b){return '#'+[r,g,b].map(v=>Math.round(v*255).toString(16).padStart(2,'0')).join('');}
+
+// Parse COLOUR_RGB values from STEP text and apply to faces
+function applyStepColors(){
+  if(!rawText||!faces.length) return;
+
+  const ents={};
+  const flat=rawText.replace(/\r\n/g,' ').replace(/\r/g,' ').replace(/\n/g,' ');
+  let em;
+  const re2=/#(\d+)\s*=\s*([A-Z_][A-Z_0-9]*)\s*\(([^;]*?)\)\s*;/g;
+  while((em=re2.exec(flat))!==null) ents[parseInt(em[1])]={type:em[2],params:em[3]};
+
+  function splitP(s){
+    const out=[]; let depth=0,cur='';
+    for(const c of s){
+      if(c==='('){depth++;cur+=c;}else if(c===')'){depth--;cur+=c;}
+      else if(c===','&&depth===0){out.push(cur.trim());cur='';}
+      else cur+=c;
+    }
+    if(cur.trim())out.push(cur.trim());
+    return out;
+  }
+  function firstRef(s){const m=s&&s.match(/#(\d+)/);return m?parseInt(m[1]):null;}
+  function allRefs(s){return [...(s||'').matchAll(/#(\d+)/g)].map(m=>parseInt(m[1]));}
+
+  function psaToRgb(psaId){
+    const psa=ents[psaId]; if(!psa) return null;
+    const ssuId=firstRef(psa.params); if(!ssuId) return null;
+    const ssu=ents[ssuId]; if(!ssu) return null;
+    const ssuP=splitP(ssu.params);
+    const sssId=firstRef(ssuP[1]||ssuP[0]); if(!sssId) return null;
+    const sss=ents[sssId]; if(!sss) return null;
+    const sssP=splitP(sss.params);
+    const ssfaId=firstRef(sssP[1]||sssP[0]); if(!ssfaId) return null;
+    const ssfa=ents[ssfaId]; if(!ssfa) return null;
+    const fasId=firstRef(ssfa.params); if(!fasId) return null;
+    const fas=ents[fasId]; if(!fas) return null;
+    const fasP=splitP(fas.params);
+    const fascId=firstRef(fasP[1]||fasP[0]); if(!fascId) return null;
+    const fasc=ents[fascId]; if(!fasc) return null;
+    const fascP=splitP(fasc.params);
+    const colId=firstRef(fascP[1]||fascP[0]); if(!colId) return null;
+    const col=ents[colId]; if(!col||col.type!=='COLOUR_RGB') return null;
+    const nums=col.params.match(/[\d.E+\-]+/gi);
+    if(!nums||nums.length<3) return null;
+    return [parseFloat(nums[0]),parseFloat(nums[1]),parseFloat(nums[2])];
+  }
+
+  // Per-face entity id -> rgb  (ORSI / SI -> ADVANCED_FACE)
+  const faceEntityColor=new Map();
+  // Per-body entity id -> rgb  (SI -> MSB)
+  const bodyEntityColor=new Map();
+
+  for(const k of Object.keys(ents)){
+    const e=ents[k];
+    if(e.type!=='OVER_RIDING_STYLED_ITEM'&&e.type!=='STYLED_ITEM') continue;
+    const p=splitP(e.params);
+    const psaId=firstRef(p[1]);
+    const itemId=firstRef(p[2]);
+    if(!psaId||!itemId) continue;
+    const itemEnt=ents[itemId]; if(!itemEnt) continue;
+    const rgb=psaToRgb(psaId); if(!rgb) continue;
+    if(itemEnt.type==='ADVANCED_FACE'||itemEnt.type==='FACE_SURFACE'){
+      faceEntityColor.set(itemId,rgb);
+    } else if(itemEnt.type==='MANIFOLD_SOLID_BREP'||itemEnt.type==='SHELL_BASED_SURFACE_MODEL'||itemEnt.type==='BREP_WITH_VOIDS'){
+      bodyEntityColor.set(itemId,rgb);
+    }
+  }
+
+  // Build brepFaceIndex -> rgb by walking every ABSR in order.
+  // OCCT flattens all bodies in ABSR ref order into one brep_faces array.
+  // We produce a flat array of rgb values in the same order.
+  // Key: ABSR entity id (integer) -> [rgb, ...]
+  const absrFaceColors=new Map(); // absrId -> [rgb|null, ...]
+
+  for(const k of Object.keys(ents)){
+    const e=ents[k];
+    if(e.type!=='ADVANCED_BREP_SHAPE_REPRESENTATION'&&e.type!=='MANIFOLD_SURFACE_SHAPE_REPRESENTATION') continue;
+    const absrId=parseInt(k);
+    const refs=allRefs(e.params);
+    const colors=[];
+    for(const ref of refs){
+      const refEnt=ents[ref]; if(!refEnt) continue;
+      if(refEnt.type!=='MANIFOLD_SOLID_BREP'&&refEnt.type!=='SHELL_BASED_SURFACE_MODEL'&&refEnt.type!=='BREP_WITH_VOIDS') continue;
+      const bodyRgb=bodyEntityColor.get(ref)||null;
+      const shellId=firstRef(refEnt.params); if(!shellId) continue;
+      const shell=ents[shellId]; if(!shell) continue;
+      const faceRefs=allRefs(shell.params).filter(id=>{
+        const fe=ents[id]; return fe&&(fe.type==='ADVANCED_FACE'||fe.type==='FACE_SURFACE');
+      });
+      faceRefs.forEach(fid=>colors.push(faceEntityColor.get(fid)||bodyRgb));
+    }
+    if(colors.length) absrFaceColors.set(absrId,colors);
+  }
+
+  // Classic flat faceIds[] for single-body / per-face ORSI files
+  const faceIds=[];
+  const fre=/#(\d+)\s*=\s*(?:ADVANCED_FACE|FACE_SURFACE)\b/gi;
+  let fm;
+  while((fm=fre.exec(rawText))!==null) faceIds.push(parseInt(fm[1]));
+
+  console.log('[STEP colors] faceEntityColor:',faceEntityColor.size,
+    'bodyEntityColor:',bodyEntityColor.size,
+    'absrFaceColors entries:',absrFaceColors.size,
+    'faces:',faces.length,
+    'meshName[0]:',faces[0]&&faces[0].meshName,
+    'absrKeys:',[...absrFaceColors.keys()]);
+
+  // If there's exactly one ABSR and its face count matches total faces, use it directly
+  let absrColors=null;
+  if(absrFaceColors.size===1){
+    absrColors=[...absrFaceColors.values()][0];
+  } else if(absrFaceColors.size>1){
+    // Multiple ABSRs: try to match by face count to the mesh
+    // For now just concatenate all in order
+    absrColors=[];
+    for(const arr of absrFaceColors.values()) absrColors.push(...arr);
+  }
+
+  let applied=0;
+  for(let i=0;i<faces.length;i++){
+    const f=faces[i];
+    let rgb=null;
+
+    // Per-face ORSI/SI -> ADVANCED_FACE takes highest priority
+    const stepId=faceIds[f.brepFaceIndex];
+    if(stepId) rgb=faceEntityColor.get(stepId)||null;
+
+    // Fall back to ABSR-order per-body colors (multi-body files)
+    if(!rgb&&absrColors) rgb=absrColors[f.globalFaceIdx]||null;
+
+    if(!rgb) continue;
+    const hex=rgbToHex(rgb[0],rgb[1],rgb[2]);
+    faces[i].mesh.material.color.set(hex);
+    faces[i].color=hex;
+    faces[i].defaultColor=hex;
+    applied++;
+  }
+  console.log('[STEP colors] applied:',applied,'of',faces.length);
+  if(applied) log(`Applied ${applied} face colors from STEP`,'log-ok');
+  initPalette();
+  log(`Loaded ${faces.length} faces`,'log-ok');
+}
+
+// ── Export ────────────────────────────────────────────────────
+document.getElementById('btn-export').onclick=()=>{
+  // Export faces that were explicitly painted OR loaded with colors from the file
+  const colored=faces.filter(f=>f.userColored||f.color!==f.defaultColor||f.defaultColor!=='#aaaaaa');
+  if(!colored.length){log('No colors applied','log-warn');return;}
+  if(!rawText){log('No file loaded','log-warn');return;}
+
+  const faceIds=[];
+  const re=/#(\d+)\s*=\s*(?:ADVANCED_FACE|FACE_SURFACE)\b/gi;
+  let m;
+  while((m=re.exec(rawText))!==null) faceIds.push(parseInt(m[1]));
+
+  let maxId=0;
+  (rawText.match(/#(\d+)\s*=/g)||[]).forEach(s=>{const n=parseInt(s.slice(1));if(n>maxId)maxId=n;});
+  let next=maxId+1;
+
+  const ctxMatch=rawText.match(/#(\d+)\s*=\s*\(\s*GEOMETRIC_REPRESENTATION_CONTEXT/i);
+  const ctxId=ctxMatch?parseInt(ctxMatch[1]):6;
+
+  const solidMatch=rawText.match(/#(\d+)\s*=\s*MANIFOLD_SOLID_BREP/i);
+  const solidId=solidMatch?parseInt(solidMatch[1]):faceIds[0];
+
+  const allLines=[];
+  const mdgprItems=[];
+
+  // Build a color chain: returns psaId given hex color string
+  // Write raw sRGB values (hex/255) — this matches what Onshape writes and Altium reads correctly
+  function makeStyle(hex){
+    const [r,g,b]=[hex.slice(1,3),hex.slice(3,5),hex.slice(5,7)]
+      .map(h=>(parseInt(h,16)/255).toFixed(15));
+    const colId=next++,fascId=next++,fasId=next++,ssfaId=next++,sssId=next++,ssuId=next++,psaId=next++;
+    allLines.push(
+      `#${colId}=COLOUR_RGB('',${r},${g},${b});`,
+      `#${fascId}=FILL_AREA_STYLE_COLOUR('',#${colId});`,
+      `#${fasId}=FILL_AREA_STYLE('',(#${fascId}));`,
+      `#${ssfaId}=SURFACE_STYLE_FILL_AREA(#${fasId});`,
+      `#${sssId}=SURFACE_SIDE_STYLE('',(#${ssfaId}));`,
+      `#${ssuId}=SURFACE_STYLE_USAGE(.BOTH.,#${sssId});`,
+      `#${psaId}=PRESENTATION_STYLE_ASSIGNMENT((#${ssuId}));`
+    );
+    return psaId;
+  }
+
+  // Base STYLED_ITEM on the solid body with default gray
+  const basePsaId=makeStyle('#808080');
+  const baseSiId=next++;
+  allLines.push(`#${baseSiId}=STYLED_ITEM('',(#${basePsaId}),#${solidId});`);
+  mdgprItems.push(`#${baseSiId}`);
+
+  // OVER_RIDING_STYLED_ITEM per painted face
+  for(const f of colored){
+    const stepId=faceIds[f.brepFaceIndex];
+    if(!stepId) continue;
+    const psaId=makeStyle(f.color);
+    const orsiId=next++;
+    allLines.push(`#${orsiId}=OVER_RIDING_STYLED_ITEM('',(#${psaId}),#${stepId},#${baseSiId});`);
+    mdgprItems.push(`#${orsiId}`);
+  }
+
+  const mdgprId=next++;
+  allLines.push(`#${mdgprId}=MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(${mdgprItems.join(',')}),#${ctxId});`);
+
+  // Keep original schema — Onshape's working AP242 file proves schema doesn't matter
+  let out=rawText;
+  const le=out.lastIndexOf('ENDSEC');
+  out=out.slice(0,le)+allLines.join('\n')+'\n'+out.slice(le);
+
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([out],{type:'text/plain'}));
+  a.download='colored_output.step';a.click();
+};
+
+// ── Favorites ─────────────────────────────────────────────────
+let favorites=[];
+try{ favorites=JSON.parse(document.getElementById('favorites-data').textContent)||[]; }catch(e){}
+
+// Capture original source before any DOM mutation
+const _originalSrc=(()=>{
+  // Walk script tags to find our own source
+  const scripts=document.querySelectorAll('script:not([src]):not([type])');
+  // Reconstruct from the full page source via fetch of location.href won't work for file://
+  // Instead stash a clean copy of the HTML right now via outerHTML before any canvas resize etc.
+  // We do this synchronously at parse time so canvases haven't been touched yet.
+  return '<!DOCTYPE html>\n'+document.documentElement.outerHTML;
+})();
+
+function buildSaveHtml(){
+  // Replace only the favorites-data JSON content in the original source
+  return _originalSrc.replace(
+    /(<script\s+id="favorites-data"[^>]*>)([\s\S]*?)(<\/script>)/,
+    (_, open, _old, close)=> open+JSON.stringify(favorites)+close
+  );
+}
+
+function renderFavorites(){
+  const el=document.getElementById('fav-colors');
+  el.innerHTML='';
+  favorites.forEach((hex,i)=>{
+    const sw=document.createElement('div');
+    sw.className='fav-swatch';
+    sw.style.background=hex;
+    sw.title=hex+' · right-click to remove';
+    sw.addEventListener('click',()=>setActiveColor(hex));
+    sw.addEventListener('contextmenu',e=>{
+      e.preventDefault();
+      favorites.splice(i,1);
+      renderFavorites();
+    });
+    el.appendChild(sw);
+  });
+}
+
+document.getElementById('btn-fav-add').onclick=()=>{
+  const hex=activeColor.toLowerCase();
+  if(!favorites.includes(hex)){ favorites.push(hex); renderFavorites(); }
+};
+
+document.getElementById('btn-fav-save').onclick=async()=>{
+  const html=buildSaveHtml();
+  if(window.showSaveFilePicker){
+    try{
+      const fh=await window.showSaveFilePicker({
+        suggestedName:'step-color-editor.html',
+        types:[{description:'HTML file',accept:{'text/html':['.html']}}]
+      });
+      const w=await fh.createWritable();
+      await w.write(html);
+      await w.close();
+      const btn=document.getElementById('btn-fav-save');
+      const orig=btn.textContent;
+      btn.textContent='Saved ✓';
+      setTimeout(()=>btn.textContent=orig,1500);
+    }catch(e){ if(e.name!=='AbortError') console.error(e); }
+  } else {
+    // Fallback for browsers without File System Access API
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));
+    a.download='step-color-editor.html';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+};
+
+renderFavorites();
+
+initOcct();
+</script></body></html>
