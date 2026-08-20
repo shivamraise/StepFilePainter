@@ -1,0 +1,12 @@
+{
+  "name": "step-painter-tests",
+  "private": true,
+  "description": "Regression tests for the STEP face-to-entity mapping in index.html",
+  "dependencies": {
+    "occt-import-js": "0.0.22"
+  },
+  "scripts": {
+    "roundtrip": "node --max-old-space-size=6000 roundtrip.cjs ../index.html",
+    "verify": "node --max-old-space-size=6000 verifycheck.cjs ../index.html"
+  }
+}

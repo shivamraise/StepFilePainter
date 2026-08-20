@@ -660,7 +660,7 @@ function buildScene(result){
   const cx=(x0+x1)/2,cy=(y0+y1)/2,cz=(z0+z1)/2;
   const sc=6/Math.max(x1-x0,y1-y0,z1-z0,0.001);
 
-  let faceIdx=0;
+  let faceIdx=0,meshIndex=0;
   for(const meshData of result.meshes){
     const pos=meshData.attributes.position.array;
     const nor=meshData.attributes.normal?meshData.attributes.normal.array:null;
@@ -700,6 +700,8 @@ function buildScene(result){
         else geo.computeVertexNormals();
         geo.setIndex(new THREE.BufferAttribute(fi,1));
 
+        const planar=isPlanarTessellation(fp,fi);
+        const area=tessellationArea(fp,fi)/(sc*sc);
         const c=bf.color;
         const col=c?rgbToHex(c[0],c[1],c[2]):'#aaaaaa';
         const mat=new THREE.MeshPhongMaterial({color:col,side:THREE.DoubleSide,shininess:5,specular:0x0a0a0a,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
@@ -708,7 +710,7 @@ function buildScene(result){
         const edgeLine=new THREE.LineSegments(edgeGeo,new THREE.LineBasicMaterial({color:0x000000,opacity:0.7,transparent:true}));
         mesh.add(edgeLine);
         modelGroup.add(mesh);
-        faces.push({id:faceIdx,meshName:meshData.name||'',brepFaceIndex:bfi,globalFaceIdx:faceIdx,name:`Face ${faceIdx+1}`,mesh:modelGroup.children[modelGroup.children.length-1],color:col,defaultColor:col});
+        faces.push({id:faceIdx,meshName:meshData.name||'',meshIndex,planarTess:planar,tessArea:area,brepFaceIndex:bfi,globalFaceIdx:faceIdx,name:`Face ${faceIdx+1}`,mesh:modelGroup.children[modelGroup.children.length-1],color:col,defaultColor:col});
         faceIdx++;
       }
     } else {
@@ -725,9 +727,10 @@ function buildScene(result){
       mesh.add(edgeLine2);
       modelGroup.add(mesh);
       const col2=meshData.color?rgbToHex(meshData.color[0],meshData.color[1],meshData.color[2]):'#aaaaaa';
-      faces.push({id:faceIdx,meshName:meshData.name||'',brepFaceIndex:0,globalFaceIdx:faceIdx,name:meshData.name||`Face ${faceIdx+1}`,mesh:modelGroup.children[modelGroup.children.length-1],color:col2,defaultColor:col2});
+      faces.push({id:faceIdx,meshName:meshData.name||'',meshIndex,planarTess:null,brepFaceIndex:0,globalFaceIdx:faceIdx,name:meshData.name||`Face ${faceIdx+1}`,mesh:modelGroup.children[modelGroup.children.length-1],color:col2,defaultColor:col2});
       faceIdx++;
     }
+    meshIndex++;
   }
 
   scene.add(modelGroup);
@@ -736,227 +739,598 @@ function buildScene(result){
   document.getElementById('btn-paint-all').disabled=false;
   undoStack.length=0; redoStack.length=0;
 
-  // Parse face colors directly from STEP text (handles OVER_RIDING_STYLED_ITEM
-  // which OCCT doesn't read back as bf.color)
+  // OCCT does not report OVER_RIDING_STYLED_ITEM colors back as bf.color, so the
+  // file's own colors are read from the STEP text once faces are mapped to entities.
+  assignStepFaceIds();
   applyStepColors();
+  log(`Loaded ${faces.length} faces`,'log-ok');
 
   initPalette();
 }
 
 function rgbToHex(r,g,b){return '#'+[r,g,b].map(v=>Math.round(v*255).toString(16).padStart(2,'0')).join('');}
 
-// Parse COLOUR_RGB values from STEP text and apply to faces
-function applyStepColors(){
+// Surface area of a tessellated face. Rigid placement does not change it, so it can
+// be compared against the same face measured from the STEP text.
+function tessellationArea(pos,idx){
+  let area=0;
+  for(let i=0;i+2<idx.length;i+=3){
+    const a=idx[i]*3,b=idx[i+1]*3,c=idx[i+2]*3;
+    const ux=pos[b]-pos[a],uy=pos[b+1]-pos[a+1],uz=pos[b+2]-pos[a+2];
+    const vx=pos[c]-pos[a],vy=pos[c+1]-pos[a+1],vz=pos[c+2]-pos[a+2];
+    area+=0.5*Math.hypot(uy*vz-uz*vy,uz*vx-ux*vz,ux*vy-uy*vx);
+  }
+  return area;
+}
+
+// True when every triangle of a tessellated face shares one normal, i.e. the face
+// is flat. Unlike coordinates this survives whatever placement the assembly applies,
+// which is what makes it usable for checking a mapping against the STEP text.
+function isPlanarTessellation(pos,idx){
+  let nx=0,ny=0,nz=0,have=false;
+  for(let i=0;i+2<idx.length;i+=3){
+    const a=idx[i]*3,b=idx[i+1]*3,c=idx[i+2]*3;
+    const ux=pos[b]-pos[a],uy=pos[b+1]-pos[a+1],uz=pos[b+2]-pos[a+2];
+    const vx=pos[c]-pos[a],vy=pos[c+1]-pos[a+1],vz=pos[c+2]-pos[a+2];
+    let cx=uy*vz-uz*vy,cy=uz*vx-ux*vz,cz=ux*vy-uy*vx;
+    const len=Math.hypot(cx,cy,cz);
+    if(len<1e-12) continue;            // degenerate sliver, tells us nothing
+    cx/=len;cy/=len;cz/=len;
+    if(!have){nx=cx;ny=cy;nz=cz;have=true;continue;}
+    // 0.999 ≈ 2.5°, loose enough for tessellation noise on a flat face
+    if(Math.abs(nx*cx+ny*cy+nz*cz)<0.999) return false;
+  }
+  return have?true:null;
+}
+
+// ── STEP topology ─────────────────────────────────────────────
+// occt-import-js emits one mesh per solid, walking the product/assembly tree in
+// order, and inside each mesh one brep face per topological face in CLOSED_SHELL
+// list order. Reproducing that same traversal over the raw text is what lets a
+// picked face be written back to the right ADVANCED_FACE. Guessing the entity id
+// from a face index does not survive exporters (SolidWorks, Altium) that number
+// entities out of topological order, nor multi-body files where the index restarts.
+const STEP_BODY_TYPES=new Set(['MANIFOLD_SOLID_BREP','SHELL_BASED_SURFACE_MODEL','BREP_WITH_VOIDS','FACETED_BREP']);
+const STEP_SHELL_TYPES=new Set(['CLOSED_SHELL','OPEN_SHELL']);
+const STEP_FACE_TYPES=new Set(['ADVANCED_FACE','FACE_SURFACE']);
+const STEP_REP_TYPES=new Set(['ADVANCED_BREP_SHAPE_REPRESENTATION','MANIFOLD_SURFACE_SHAPE_REPRESENTATION','FACETED_BREP_SHAPE_REPRESENTATION','GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION','SHAPE_REPRESENTATION']);
+
+let stepTopo=null;       // {ents,bodies,faces,repCtx}
+let stepMappingOk=false; // false ⇒ we cannot say which entity a face is; export is refused
+
+function stepRefs(s){return [...(s||'').matchAll(/#(\d+)/g)].map(m=>parseInt(m[1]));}
+
+function splitParams(s){
+  const out=[];let depth=0,cur='',quoted=false;
+  for(const c of s){
+    if(c==="'")quoted=!quoted;
+    if(!quoted&&c==='('){depth++;cur+=c;}
+    else if(!quoted&&c===')'){depth--;cur+=c;}
+    else if(!quoted&&c===','&&depth===0){out.push(cur.trim());cur='';}
+    else cur+=c;
+  }
+  if(cur.trim())out.push(cur.trim());
+  return out;
+}
+
+function parseStepEntities(text){
+  const flat=text.replace(/\r/g,' ').replace(/\n/g,' ');
+  const ents=new Map();
+  const re=/#(\d+)\s*=\s*([A-Z_][A-Z_0-9]*)\s*\(([^;]*?)\)\s*;/g;
+  let m;
+  while((m=re.exec(flat))!==null) ents.set(parseInt(m[1]),{type:m[2],params:m[3]});
+  // Complex instances — "#12=(REPRESENTATION_RELATIONSHIP(..)SHAPE_REPRESENTATION_RELATIONSHIP())" —
+  // are not matched above, and in most assemblies that is exactly how a part is
+  // linked to the representation holding its solids. Record every name they carry.
+  const complexRe=/#(\d+)\s*=\s*\(\s*([A-Z_][A-Z_0-9]*\s*\([^;]*?)\)\s*;/g;
+  while((m=complexRe.exec(flat))!==null){
+    const id=parseInt(m[1]);
+    if(ents.has(id)) continue;
+    const types=new Set([...m[2].matchAll(/([A-Z_][A-Z_0-9]*)\s*\(/g)].map(x=>x[1]));
+    ents.set(id,{type:[...types][0]||'',types,params:m[2]});
+  }
+  return ents;
+}
+
+// A complex instance answers to every name it carries, not just the first.
+function entIs(e,type){return !!e&&(e.type===type||(e.types!==undefined&&e.types.has(type)));}
+function entIsAny(e,types){
+  if(!e) return false;
+  if(types.has(e.type)) return true;
+  if(e.types) for(const t of e.types) if(types.has(t)) return true;
+  return false;
+}
+
+// Complex instances like "#377 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) ... )" are
+// not matched by the simple entity regex, so collect them by keyword separately.
+function stepComplexIds(text,keyword){
+  const ids=new Set(),re=new RegExp('#(\\d+)\\s*=\\s*\\(\\s*[^;]*'+keyword,'g');
+  let m;
+  while((m=re.exec(text))!==null) ids.add(parseInt(m[1]));
+  return ids;
+}
+
+// Bodies of one representation, in item order; each body's faces in shell order.
+function stepRepBodies(ents,repId){
+  const out=[],rep=ents.get(repId);
+  if(!rep) return out;
+  for(const r of stepRefs(rep.params)){
+    const body=ents.get(r);
+    if(!entIsAny(body,STEP_BODY_TYPES)) continue;
+    const faceIds=[];
+    for(let s of stepRefs(body.params)){
+      let shell=ents.get(s);
+      // BREP_WITH_VOIDS reaches its void shells through ORIENTED_CLOSED_SHELL.
+      if(entIs(shell,'ORIENTED_CLOSED_SHELL')){
+        s=stepRefs(shell.params)[0];
+        shell=ents.get(s);
+      }
+      if(!entIsAny(shell,STEP_SHELL_TYPES)) continue;
+      for(const f of stepRefs(shell.params)){
+        if(entIsAny(ents.get(f),STEP_FACE_TYPES)) faceIds.push(f);
+      }
+    }
+    if(faceIds.length) out.push({bodyId:r,repId,faceIds});
+  }
+  return out;
+}
+
+// PRODUCT_DEFINITION → the representations that actually carry solids. The link is
+// PD ← PRODUCT_DEFINITION_SHAPE ← SHAPE_DEFINITION_REPRESENTATION → SHAPE_REPRESENTATION,
+// and a SHAPE_REPRESENTATION_RELATIONSHIP often stands between that and the ABSR.
+function stepProductReps(ents){
+  const pdOfPds=new Map();
+  for(const [id,e] of ents)
+    if(e.type==='PRODUCT_DEFINITION_SHAPE') pdOfPds.set(id,stepRefs(e.params)[0]);
+
+  const repsOfPd=new Map();
+  for(const [,e] of ents){
+    if(e.type!=='SHAPE_DEFINITION_REPRESENTATION') continue;
+    const [pds,sr]=stepRefs(e.params);
+    const pd=pdOfPds.get(pds);
+    if(pd==null) continue;
+    if(!repsOfPd.has(pd)) repsOfPd.set(pd,[]);
+    repsOfPd.get(pd).push(sr);
+  }
+
+  // The relationship placing a component inside its parent is reached through a
+  // CONTEXT_DEPENDENT_SHAPE_REPRESENTATION. Following those would pull a child's
+  // solids up into the parent product, so they are excluded here.
+  const assemblyRels=new Set();
+  for(const [,e] of ents){
+    if(!entIs(e,'CONTEXT_DEPENDENT_SHAPE_REPRESENTATION')) continue;
+    for(const r of stepRefs(e.params)) assemblyRels.add(r);
+  }
+  const linked=new Map();
+  for(const [id,e] of ents){
+    if(assemblyRels.has(id)) continue;
+    if(!entIs(e,'SHAPE_REPRESENTATION_RELATIONSHIP')&&!entIs(e,'REPRESENTATION_RELATIONSHIP')) continue;
+    const rs=stepRefs(e.params);
+    if(rs.length<2) continue;
+    for(const pair of [[rs[0],rs[1]],[rs[1],rs[0]]]){
+      if(!linked.has(pair[0])) linked.set(pair[0],[]);
+      linked.get(pair[0]).push(pair[1]);
+    }
+  }
+
+  const out=new Map();
+  for(const [pd,srs] of repsOfPd){
+    const reps=[],seen=new Set();
+    const walk=r=>{
+      if(seen.has(r)) return;
+      seen.add(r);
+      const e=ents.get(r);
+      if(!entIsAny(e,STEP_REP_TYPES)) return;
+      if(stepRepBodies(ents,r).length) reps.push(r);
+      for(const n of (linked.get(r)||[])) walk(n);
+    };
+    for(const sr of srs) walk(sr);
+    out.set(pd,reps);
+  }
+  return out;
+}
+
+// Walk the assembly the way occt-import-js does: a component is meshed before the
+// solids its parent owns, and a product used more than once is meshed once per
+// occurrence, so the same ADVANCED_FACE can back several tessellated faces.
+function stepAssemblyBodies(ents,repsOfPd){
+  const children=new Map(),isChild=new Set(),products=new Set();
+  for(const [,e] of ents){
+    if(!entIs(e,'NEXT_ASSEMBLY_USAGE_OCCURRENCE')) continue;
+    const rs=stepRefs(e.params);
+    if(rs.length<2) continue;
+    const parent=rs[0],child=rs[1];
+    if(!children.has(parent)) children.set(parent,[]);
+    children.get(parent).push(child);
+    isChild.add(child);products.add(parent);products.add(child);
+  }
+  for(const [id,e] of ents) if(entIs(e,'PRODUCT_DEFINITION')) products.add(id);
+
+  const bodies=[],usedRep=new Set();
+  const walk=(pd,depth)=>{
+    if(depth>64) return;
+    for(const c of (children.get(pd)||[])) walk(c,depth+1);
+    for(const rep of (repsOfPd.get(pd)||[])){
+      usedRep.add(rep);
+      bodies.push(...stepRepBodies(ents,rep));
+    }
+  };
+  for(const pd of products) if(!isChild.has(pd)) walk(pd,0);
+  return {bodies,usedRep};
+}
+
+// Flat list of faces in occt-import-js emission order.
+function buildStepTopology(text){
+  const ents=parseStepEntities(text);
+  const ctxIds=stepComplexIds(text,'GEOMETRIC_REPRESENTATION_CONTEXT');
+  const repsOfPd=stepProductReps(ents);
+  const walked=stepAssemblyBodies(ents,repsOfPd);
+  const bodies=walked.bodies,usedRep=walked.usedRep;
+
+  // Representations not reachable through the product structure still get meshed.
+  for(const [id,e] of ents){
+    if(!entIsAny(e,STEP_REP_TYPES)||usedRep.has(id)) continue;
+    const b=stepRepBodies(ents,id);
+    if(!b.length) continue;
+    usedRep.add(id);bodies.push(...b);
+  }
+
+  const repCtx=new Map();
+  for(const rep of usedRep){
+    const e=ents.get(rep);
+    if(!e) continue;
+    const rs=stepRefs(e.params);
+    const ctx=rs.filter(r=>ctxIds.has(r))[0];
+    repCtx.set(rep,ctx!==undefined?ctx:rs[rs.length-1]);
+  }
+
+  const flat=[];
+  bodies.forEach((b,meshIndex)=>b.faceIds.forEach(stepFaceId=>
+    flat.push({stepFaceId,bodyId:b.bodyId,repId:b.repId,meshIndex})));
+  return {ents,bodies,faces:flat,repCtx};
+}
+
+// Surfaces that can never tessellate flat. If the text says a face is one of these
+// but the triangles are coplanar (or the text says PLANE and they are not), the face
+// we are looking at is not the face we think it is.
+const STEP_CURVED_SURFACES=new Set(['CYLINDRICAL_SURFACE','CONICAL_SURFACE','SPHERICAL_SURFACE','TOROIDAL_SURFACE','SURFACE_OF_REVOLUTION','SURFACE_OF_LINEAR_EXTRUSION']);
+
+function stepPoints(ents){
+  const pts=new Map();
+  for(const [id,e] of ents){
+    if(!entIs(e,'CARTESIAN_POINT')) continue;
+    const n=e.params.match(/[-+]?\d*\.?\d+(?:E[-+]?\d+)?/gi);
+    if(n&&n.length>=3) pts.set(id,[parseFloat(n[n.length-3]),parseFloat(n[n.length-2]),parseFloat(n[n.length-1])]);
+  }
+  return pts;
+}
+
+// Area of a planar face read straight off its boundary loops. Only attempted when
+// every edge is a straight line, which is where the loop vertices are the polygon.
+function stepPlanarFaceArea(ents,pts,faceId){
+  const face=ents.get(faceId);
+  if(!face) return null;
+  const areas=[];
+  for(const b of stepRefs(face.params)){
+    const bound=ents.get(b);
+    if(!bound||!/^FACE_(OUTER_)?BOUND$/.test(bound.type)) continue;
+    const loop=ents.get(stepRefs(bound.params)[0]);
+    if(!entIs(loop,'EDGE_LOOP')) return null;
+    const poly=[];
+    for(const oeId of stepRefs(loop.params)){
+      const oe=ents.get(oeId);
+      if(!entIs(oe,'ORIENTED_EDGE')) return null;
+      const edge=ents.get(stepRefs(oe.params)[0]);
+      if(!entIs(edge,'EDGE_CURVE')) return null;
+      const er=stepRefs(edge.params);
+      if(!entIs(ents.get(er[2]),'LINE')) return null;   // arcs need real integration
+      const forward=!/\.F\./.test(splitParams(oe.params).pop()||'');
+      const vertex=ents.get(forward?er[0]:er[1]);
+      if(!entIs(vertex,'VERTEX_POINT')) return null;
+      const pt=pts.get(stepRefs(vertex.params)[0]);
+      if(!pt) return null;
+      poly.push(pt);
+    }
+    if(poly.length<3) return null;
+    // Newell: twice the area vector of a planar polygon, valid in any orientation.
+    let ax=0,ay=0,az=0;
+    for(let i=0;i<poly.length;i++){
+      const q=poly[i],r=poly[(i+1)%poly.length];
+      ax+=q[1]*r[2]-q[2]*r[1];
+      ay+=q[2]*r[0]-q[0]*r[2];
+      az+=q[0]*r[1]-q[1]*r[0];
+    }
+    areas.push(0.5*Math.hypot(ax,ay,az));
+  }
+  if(!areas.length) return null;
+  // The largest loop is the outline whatever order the bounds were written in;
+  // the rest are holes through it.
+  const outer=Math.max(...areas);
+  return Math.max(outer*2-areas.reduce((a,b)=>a+b,0),0);
+}
+
+function stepFaceSurfaceType(ents,faceId){
+  const face=ents.get(faceId);
+  if(!face) return null;
+  // ADVANCED_FACE('name',(bounds),#surface,.T.) — the surface is the last reference.
+  const rs=stepRefs(face.params);
+  const surf=ents.get(rs[rs.length-1]);
+  return surf?surf.type:null;
+}
+
+// Cross-check the mapping without trusting coordinates: an assembly places its
+// components with arbitrary rotations, but whether a face is flat does not change.
+function verifyStepMapping(){
+  const ents=stepTopo.ents,pts=stepPoints(ents);
+  let checked=0,wrong=0;
+  for(const f of faces){
+    if(f.planarTess===null||f.planarTess===undefined) continue;
+    const surf=stepFaceSurfaceType(ents,f.stepFaceId);
+    if(!surf) continue;
+    if(surf==='PLANE'){
+      checked++;
+      if(!f.planarTess){wrong++;continue;}
+      // Both flat: areas separate faces that a flatness test alone cannot.
+      const area=stepPlanarFaceArea(ents,pts,f.stepFaceId);
+      if(area!==null&&area>0&&f.tessArea>0&&
+         Math.abs(area-f.tessArea)/Math.max(area,f.tessArea)>0.02) wrong++;
+    } else if(STEP_CURVED_SURFACES.has(surf)){
+      checked++;
+      if(f.planarTess) wrong++;
+    }
+  }
+  // A handful of degenerate or near-flat faces is normal; a wrong order is not.
+  const ok=checked===0||wrong<=Math.max(1,checked*0.02);
+  if(!ok) log(`Face mapping rejected: ${wrong} of ${checked} faces do not match the STEP geometry`,'log-err');
+  return ok;
+}
+
+// Attach the STEP entity id to every three.js face, but only once the tessellation
+// we got back agrees with the topology we parsed. A silent mismatch is how wrong
+// faces used to get painted, so a mismatch disables export instead.
+function assignStepFaceIds(){
+  stepTopo=null;stepMappingOk=false;
   if(!rawText||!faces.length) return;
+  stepTopo=buildStepTopology(rawText);
 
-  const ents={};
-  const flat=rawText.replace(/\r\n/g,' ').replace(/\r/g,' ').replace(/\n/g,' ');
-  let em;
-  const re2=/#(\d+)\s*=\s*([A-Z_][A-Z_0-9]*)\s*\(([^;]*?)\)\s*;/g;
-  while((em=re2.exec(flat))!==null) ents[parseInt(em[1])]={type:em[2],params:em[3]};
+  const meshCounts=[];
+  for(const f of faces) meshCounts[f.meshIndex]=(meshCounts[f.meshIndex]||0)+1;
+  const topoCounts=stepTopo.bodies.map(b=>b.faceIds.length);
 
-  function splitP(s){
-    const out=[]; let depth=0,cur='';
-    for(const c of s){
-      if(c==='('){depth++;cur+=c;}else if(c===')'){depth--;cur+=c;}
-      else if(c===','&&depth===0){out.push(cur.trim());cur='';}
-      else cur+=c;
+  if(meshCounts.length!==topoCounts.length||meshCounts.some((n,i)=>n!==topoCounts[i])){
+    log(`Face mapping failed: tessellation has ${meshCounts.join(',')} faces per body, STEP topology has ${topoCounts.join(',')}`,'log-err');
+    console.warn('[STEP topology] mismatch',{meshCounts,topoCounts});
+    return;
+  }
+  faces.forEach((f,i)=>{
+    const t=stepTopo.faces[i];
+    f.stepFaceId=t.stepFaceId;f.stepBodyId=t.bodyId;f.stepRepId=t.repId;
+  });
+  if(!verifyStepMapping()){
+    faces.forEach(f=>{f.stepFaceId=undefined;f.stepBodyId=undefined;f.stepRepId=undefined;});
+    return;
+  }
+  stepMappingOk=true;
+
+  const distinct=new Set(stepTopo.faces.map(t=>t.stepFaceId)).size;
+  if(distinct<stepTopo.faces.length)
+    log(`${faces.length-distinct} faces are repeated instances of the same part — painting one paints them all`,'log-warn');
+  log(`Mapped ${faces.length} faces to STEP entities`,'log-ok');
+}
+
+// Walk PRESENTATION_STYLE_ASSIGNMENT → … → COLOUR_RGB, following the first
+// reference at each step, and return [r,g,b].
+function stepPsaToRgb(ents,psaId){
+  let id=psaId;
+  for(let hop=0;hop<8;hop++){
+    const e=ents.get(id);
+    if(!e) return null;
+    if(e.type==='COLOUR_RGB'){
+      const n=e.params.match(/[-+]?[\d.]+(?:E[-+]?\d+)?/gi);
+      if(!n||n.length<3) return null;
+      return [parseFloat(n[n.length-3]),parseFloat(n[n.length-2]),parseFloat(n[n.length-1])];
     }
-    if(cur.trim())out.push(cur.trim());
-    return out;
-  }
-  function firstRef(s){const m=s&&s.match(/#(\d+)/);return m?parseInt(m[1]):null;}
-  function allRefs(s){return [...(s||'').matchAll(/#(\d+)/g)].map(m=>parseInt(m[1]));}
-
-  function psaToRgb(psaId){
-    const psa=ents[psaId]; if(!psa) return null;
-    const ssuId=firstRef(psa.params); if(!ssuId) return null;
-    const ssu=ents[ssuId]; if(!ssu) return null;
-    const ssuP=splitP(ssu.params);
-    const sssId=firstRef(ssuP[1]||ssuP[0]); if(!sssId) return null;
-    const sss=ents[sssId]; if(!sss) return null;
-    const sssP=splitP(sss.params);
-    const ssfaId=firstRef(sssP[1]||sssP[0]); if(!ssfaId) return null;
-    const ssfa=ents[ssfaId]; if(!ssfa) return null;
-    const fasId=firstRef(ssfa.params); if(!fasId) return null;
-    const fas=ents[fasId]; if(!fas) return null;
-    const fasP=splitP(fas.params);
-    const fascId=firstRef(fasP[1]||fasP[0]); if(!fascId) return null;
-    const fasc=ents[fascId]; if(!fasc) return null;
-    const fascP=splitP(fasc.params);
-    const colId=firstRef(fascP[1]||fascP[0]); if(!colId) return null;
-    const col=ents[colId]; if(!col||col.type!=='COLOUR_RGB') return null;
-    const nums=col.params.match(/[\d.E+\-]+/gi);
-    if(!nums||nums.length<3) return null;
-    return [parseFloat(nums[0]),parseFloat(nums[1]),parseFloat(nums[2])];
-  }
-
-  // Per-face entity id -> rgb  (ORSI / SI -> ADVANCED_FACE)
-  const faceEntityColor=new Map();
-  // Per-body entity id -> rgb  (SI -> MSB)
-  const bodyEntityColor=new Map();
-
-  for(const k of Object.keys(ents)){
-    const e=ents[k];
-    if(e.type!=='OVER_RIDING_STYLED_ITEM'&&e.type!=='STYLED_ITEM') continue;
-    const p=splitP(e.params);
-    const psaId=firstRef(p[1]);
-    const itemId=firstRef(p[2]);
-    if(!psaId||!itemId) continue;
-    const itemEnt=ents[itemId]; if(!itemEnt) continue;
-    const rgb=psaToRgb(psaId); if(!rgb) continue;
-    if(itemEnt.type==='ADVANCED_FACE'||itemEnt.type==='FACE_SURFACE'){
-      faceEntityColor.set(itemId,rgb);
-    } else if(itemEnt.type==='MANIFOLD_SOLID_BREP'||itemEnt.type==='SHELL_BASED_SURFACE_MODEL'||itemEnt.type==='BREP_WITH_VOIDS'){
-      bodyEntityColor.set(itemId,rgb);
+    const p=splitParams(e.params);
+    // The colour is reached through the last parameter that carries a reference,
+    // which skips the leading name string these entities usually start with.
+    let nextId=null;
+    for(let i=p.length-1;i>=0;i--){
+      const r=stepRefs(p[i]);
+      if(r.length){nextId=r[0];break;}
     }
+    if(nextId==null||nextId===id) return null;
+    id=nextId;
   }
+  return null;
+}
 
-  // Build brepFaceIndex -> rgb by walking every ABSR in order.
-  // OCCT flattens all bodies in ABSR ref order into one brep_faces array.
-  // We produce a flat array of rgb values in the same order.
-  // Key: ABSR entity id (integer) -> [rgb, ...]
-  const absrFaceColors=new Map(); // absrId -> [rgb|null, ...]
-
-  for(const k of Object.keys(ents)){
-    const e=ents[k];
-    if(e.type!=='ADVANCED_BREP_SHAPE_REPRESENTATION'&&e.type!=='MANIFOLD_SURFACE_SHAPE_REPRESENTATION') continue;
-    const absrId=parseInt(k);
-    const refs=allRefs(e.params);
-    const colors=[];
-    for(const ref of refs){
-      const refEnt=ents[ref]; if(!refEnt) continue;
-      if(refEnt.type!=='MANIFOLD_SOLID_BREP'&&refEnt.type!=='SHELL_BASED_SURFACE_MODEL'&&refEnt.type!=='BREP_WITH_VOIDS') continue;
-      const bodyRgb=bodyEntityColor.get(ref)||null;
-      const shellId=firstRef(refEnt.params); if(!shellId) continue;
-      const shell=ents[shellId]; if(!shell) continue;
-      const faceRefs=allRefs(shell.params).filter(id=>{
-        const fe=ents[id]; return fe&&(fe.type==='ADVANCED_FACE'||fe.type==='FACE_SURFACE');
-      });
-      faceRefs.forEach(fid=>colors.push(faceEntityColor.get(fid)||bodyRgb));
-    }
-    if(colors.length) absrFaceColors.set(absrId,colors);
+// Colours already in the file, keyed by what they are attached to.
+function stepReadStyles(ents){
+  const face=new Map(),body=new Map(),rep=new Map();
+  for(const [,e] of ents){
+    if(e.type!=='STYLED_ITEM'&&e.type!=='OVER_RIDING_STYLED_ITEM') continue;
+    const p=splitParams(e.params);
+    const psaId=stepRefs(p[1])[0],itemId=stepRefs(p[2])[0];
+    if(psaId==null||itemId==null) continue;
+    const item=ents.get(itemId);
+    if(!item) continue;
+    const rgb=stepPsaToRgb(ents,psaId);
+    if(!rgb) continue;
+    if(STEP_FACE_TYPES.has(item.type)) face.set(itemId,rgb);
+    else if(STEP_BODY_TYPES.has(item.type)) body.set(itemId,rgb);
+    else if(STEP_REP_TYPES.has(item.type)) rep.set(itemId,rgb);
   }
+  return {face,body,rep};
+}
 
-  // Classic flat faceIds[] for single-body / per-face ORSI files
-  const faceIds=[];
-  const fre=/#(\d+)\s*=\s*(?:ADVANCED_FACE|FACE_SURFACE)\b/gi;
-  let fm;
-  while((fm=fre.exec(rawText))!==null) faceIds.push(parseInt(fm[1]));
-
-  console.log('[STEP colors] faceEntityColor:',faceEntityColor.size,
-    'bodyEntityColor:',bodyEntityColor.size,
-    'absrFaceColors entries:',absrFaceColors.size,
-    'faces:',faces.length,
-    'meshName[0]:',faces[0]&&faces[0].meshName,
-    'absrKeys:',[...absrFaceColors.keys()]);
-
-  // If there's exactly one ABSR and its face count matches total faces, use it directly
-  let absrColors=null;
-  if(absrFaceColors.size===1){
-    absrColors=[...absrFaceColors.values()][0];
-  } else if(absrFaceColors.size>1){
-    // Multiple ABSRs: try to match by face count to the mesh
-    // For now just concatenate all in order
-    absrColors=[];
-    for(const arr of absrFaceColors.values()) absrColors.push(...arr);
-  }
-
+// Apply the file's own colours: face style wins, then body, then representation.
+function applyStepColors(){
+  if(!stepMappingOk||!stepTopo) return;
+  const styles=stepReadStyles(stepTopo.ents);
   let applied=0;
-  for(let i=0;i<faces.length;i++){
-    const f=faces[i];
-    let rgb=null;
-
-    // Per-face ORSI/SI -> ADVANCED_FACE takes highest priority
-    const stepId=faceIds[f.brepFaceIndex];
-    if(stepId) rgb=faceEntityColor.get(stepId)||null;
-
-    // Fall back to ABSR-order per-body colors (multi-body files)
-    if(!rgb&&absrColors) rgb=absrColors[f.globalFaceIdx]||null;
-
+  for(const f of faces){
+    const rgb=styles.face.get(f.stepFaceId)||styles.body.get(f.stepBodyId)||styles.rep.get(f.stepRepId);
     if(!rgb) continue;
     const hex=rgbToHex(rgb[0],rgb[1],rgb[2]);
-    faces[i].mesh.material.color.set(hex);
-    faces[i].color=hex;
-    faces[i].defaultColor=hex;
+    f.mesh.material.color.set(hex);
+    f.color=hex;f.defaultColor=hex;
     applied++;
   }
-  console.log('[STEP colors] applied:',applied,'of',faces.length);
   if(applied) log(`Applied ${applied} face colors from STEP`,'log-ok');
-  initPalette();
-  log(`Loaded ${faces.length} faces`,'log-ok');
 }
 
 // ── Export ────────────────────────────────────────────────────
+
+// Style chains left behind by a removed STYLED_ITEM are inert but would pile up
+// on every round-trip, so sweep presentation entities nothing references any more.
+const STEP_PRESENTATION_TYPES=new Set(['PRESENTATION_STYLE_ASSIGNMENT','SURFACE_STYLE_USAGE','SURFACE_SIDE_STYLE','SURFACE_STYLE_FILL_AREA','SURFACE_STYLE_BOUNDARY','FILL_AREA_STYLE','FILL_AREA_STYLE_COLOUR','CURVE_STYLE','COLOUR_RGB','COLOUR_SPECIFICATION','DRAUGHTING_PRE_DEFINED_COLOUR']);
+
+function sweepOrphanStyles(text){
+  const defRe=/#(\d+)\s*=\s*([A-Z_][A-Z_0-9]*)\s*\([^;]*?\)\s*;/g;
+  for(let pass=0;pass<8;pass++){
+    const referenced=new Set();
+    for(const m of text.matchAll(/#(\d+)(?!\s*=)/g)) referenced.add(parseInt(m[1]));
+    const dead=new Set();
+    let m;
+    defRe.lastIndex=0;
+    while((m=defRe.exec(text))!==null){
+      const id=parseInt(m[1]);
+      if(STEP_PRESENTATION_TYPES.has(m[2])&&!referenced.has(id)) dead.add(id);
+    }
+    if(!dead.size) break;
+    text=text.replace(defRe,(whole,id)=>dead.has(parseInt(id))?'':whole);
+  }
+  return text;
+}
+
+// Drop the styling attached to faces and to the bodies we are about to restyle,
+// so re-exporting a file does not stack contradictory overrides on one entity.
+function stripStyling(text,ents,bodyIds){
+  const kill=new Set();
+  for(const [id,e] of ents){
+    if(e.type!=='STYLED_ITEM'&&e.type!=='OVER_RIDING_STYLED_ITEM') continue;
+    const itemId=stepRefs(splitParams(e.params)[2]||'')[0];
+    const item=itemId!=null?ents.get(itemId):null;
+    if(!item) continue;
+    if(STEP_FACE_TYPES.has(item.type)||bodyIds.has(itemId)) kill.add(id);
+  }
+  if(!kill.size) return text;
+
+  let out=text;
+  for(const id of kill)
+    out=out.replace(new RegExp('#'+id+'\\s*=\\s*(?:OVER_RIDING_)?STYLED_ITEM\\s*\\([^;]*;','g'),'');
+
+  // Prune the killed ids out of every list that referenced them.
+  out=out.replace(/#(\d+)\s*=\s*(MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION|PRESENTATION_LAYER_ASSIGNMENT|DRAUGHTING_MODEL)\s*\(([^;]*)\)\s*;/g,
+    (whole,id,type,params)=>{
+      const parts=splitParams(params);
+      const listIdx=parts.findIndex(p=>p.startsWith('('));
+      if(listIdx<0) return whole;
+      const kept=splitParams(parts[listIdx].slice(1,-1)).filter(r=>!kill.has(stepRefs(r)[0]));
+      if(!kept.length) return '';
+      parts[listIdx]='('+kept.join(',')+')';
+      return '#'+id+'='+type+'('+parts.join(',')+');';
+    });
+  return sweepOrphanStyles(out);
+}
+
 document.getElementById('btn-export').onclick=()=>{
-  // Export faces that were explicitly painted OR loaded with colors from the file
-  const colored=faces.filter(f=>f.userColored||f.color!==f.defaultColor||f.defaultColor!=='#aaaaaa');
-  if(!colored.length){log('No colors applied','log-warn');return;}
   if(!rawText){log('No file loaded','log-warn');return;}
+  if(!stepMappingOk){
+    log('Export refused: faces could not be matched to STEP entities','log-err');
+    return;
+  }
+  const colored=faces.filter(f=>f.stepFaceId&&(f.userColored||f.color!==f.defaultColor||f.defaultColor!=='#aaaaaa'));
+  if(!colored.length){log('No colors applied','log-warn');return;}
 
-  const faceIds=[];
-  const re=/#(\d+)\s*=\s*(?:ADVANCED_FACE|FACE_SURFACE)\b/gi;
-  let m;
-  while((m=re.exec(rawText))!==null) faceIds.push(parseInt(m[1]));
-
-  let maxId=0;
-  (rawText.match(/#(\d+)\s*=/g)||[]).forEach(s=>{const n=parseInt(s.slice(1));if(n>maxId)maxId=n;});
-  let next=maxId+1;
-
-  const ctxMatch=rawText.match(/#(\d+)\s*=\s*\(\s*GEOMETRIC_REPRESENTATION_CONTEXT/i);
-  const ctxId=ctxMatch?parseInt(ctxMatch[1]):6;
-
-  const solidMatch=rawText.match(/#(\d+)\s*=\s*MANIFOLD_SOLID_BREP/i);
-  const solidId=solidMatch?parseInt(solidMatch[1]):faceIds[0];
+  const ents=stepTopo.ents;
+  let next=0;
+  for(const m of rawText.matchAll(/#(\d+)\s*=/g)) if(parseInt(m[1])>next) next=parseInt(m[1]);
+  next++;
 
   const allLines=[];
-  const mdgprItems=[];
-
-  // Build a color chain: returns psaId given hex color string
-  // Write raw sRGB values (hex/255) — this matches what Onshape writes and Altium reads correctly
+  const styleCache=new Map();
   function makeStyle(hex){
-    const [r,g,b]=[hex.slice(1,3),hex.slice(3,5),hex.slice(5,7)]
+    if(styleCache.has(hex)) return styleCache.get(hex);
+    // Raw sRGB values (hex/255) — matches what Onshape writes and Altium reads back.
+    const rgb=[hex.slice(1,3),hex.slice(3,5),hex.slice(5,7)]
       .map(h=>(parseInt(h,16)/255).toFixed(15));
     const colId=next++,fascId=next++,fasId=next++,ssfaId=next++,sssId=next++,ssuId=next++,psaId=next++;
     allLines.push(
-      `#${colId}=COLOUR_RGB('',${r},${g},${b});`,
-      `#${fascId}=FILL_AREA_STYLE_COLOUR('',#${colId});`,
-      `#${fasId}=FILL_AREA_STYLE('',(#${fascId}));`,
-      `#${ssfaId}=SURFACE_STYLE_FILL_AREA(#${fasId});`,
-      `#${sssId}=SURFACE_SIDE_STYLE('',(#${ssfaId}));`,
-      `#${ssuId}=SURFACE_STYLE_USAGE(.BOTH.,#${sssId});`,
-      `#${psaId}=PRESENTATION_STYLE_ASSIGNMENT((#${ssuId}));`
+      '#'+colId+"=COLOUR_RGB('',"+rgb[0]+','+rgb[1]+','+rgb[2]+');',
+      '#'+fascId+"=FILL_AREA_STYLE_COLOUR('',#"+colId+');',
+      '#'+fasId+"=FILL_AREA_STYLE('',(#"+fascId+'));',
+      '#'+ssfaId+'=SURFACE_STYLE_FILL_AREA(#'+fasId+');',
+      '#'+sssId+"=SURFACE_SIDE_STYLE('',(#"+ssfaId+'));',
+      '#'+ssuId+'=SURFACE_STYLE_USAGE(.BOTH.,#'+sssId+');',
+      '#'+psaId+'=PRESENTATION_STYLE_ASSIGNMENT((#'+ssuId+'));'
     );
+    styleCache.set(hex,psaId);
     return psaId;
   }
 
-  // Base STYLED_ITEM on the solid body with default gray
-  const basePsaId=makeStyle('#808080');
-  const baseSiId=next++;
-  allLines.push(`#${baseSiId}=STYLED_ITEM('',(#${basePsaId}),#${solidId});`);
-  mdgprItems.push(`#${baseSiId}`);
-
-  // OVER_RIDING_STYLED_ITEM per painted face
+  // Group by the body each face actually belongs to. One base style shared across
+  // every body is what used to put overrides on the wrong solid.
+  const perBody=new Map();
   for(const f of colored){
-    const stepId=faceIds[f.brepFaceIndex];
-    if(!stepId) continue;
-    const psaId=makeStyle(f.color);
-    const orsiId=next++;
-    allLines.push(`#${orsiId}=OVER_RIDING_STYLED_ITEM('',(#${psaId}),#${stepId},#${baseSiId});`);
-    mdgprItems.push(`#${orsiId}`);
+    if(!perBody.has(f.stepBodyId)) perBody.set(f.stepBodyId,{repId:f.stepRepId,faces:[]});
+    perBody.get(f.stepBodyId).faces.push(f);
+  }
+  const allOfBody=new Map();
+  for(const f of faces){
+    if(!allOfBody.has(f.stepBodyId)) allOfBody.set(f.stepBodyId,[]);
+    allOfBody.get(f.stepBodyId).push(f);
   }
 
-  const mdgprId=next++;
-  allLines.push(`#${mdgprId}=MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(${mdgprItems.join(',')}),#${ctxId});`);
+  // An instanced part is one entity behind several tessellated faces; keep one
+  // colour per entity rather than emitting contradictory overrides.
+  for(const grp of perBody.values()){
+    const seen=new Map();
+    let clashes=0;
+    for(const f of grp.faces){
+      const prev=seen.get(f.stepFaceId);
+      if(prev===undefined) seen.set(f.stepFaceId,f);
+      else if(prev.color!==f.color) clashes++;
+    }
+    if(clashes) log(`${clashes} instanced faces had conflicting colors; kept the first`,'log-warn');
+    grp.faces=[...seen.values()];
+  }
 
-  // Keep original schema — Onshape's working AP242 file proves schema doesn't matter
-  let out=rawText;
+  const itemsByRep=new Map();
+  for(const [bodyId,grp] of perBody){
+    // Base colour = the body's most common colour, so overrides stay minimal.
+    const tally=new Map();
+    for(const f of (allOfBody.get(bodyId)||grp.faces)) tally.set(f.color,(tally.get(f.color)||0)+1);
+    const baseHex=[...tally.entries()].sort((a,b)=>b[1]-a[1])[0][0];
+
+    const baseSiId=next++;
+    allLines.push('#'+baseSiId+"=STYLED_ITEM('',(#"+makeStyle(baseHex)+'),#'+bodyId+');');
+    const items=['#'+baseSiId];
+    for(const f of grp.faces){
+      if(f.color===baseHex) continue;
+      const orsiId=next++;
+      allLines.push('#'+orsiId+"=OVER_RIDING_STYLED_ITEM('',(#"+makeStyle(f.color)+'),#'+f.stepFaceId+',#'+baseSiId+');');
+      items.push('#'+orsiId);
+    }
+    if(!itemsByRep.has(grp.repId)) itemsByRep.set(grp.repId,[]);
+    itemsByRep.get(grp.repId).push(...items);
+  }
+
+  // One presentation per representation, bound to that representation's own context.
+  for(const [repId,items] of itemsByRep){
+    const ctxId=stepTopo.repCtx.get(repId);
+    if(!ctxId){log('No context for representation #'+repId+'; colors may not load','log-warn');continue;}
+    allLines.push('#'+(next++)+"=MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',("+items.join(',')+'),#'+ctxId+');');
+  }
+
+  let out=stripStyling(rawText,ents,new Set(perBody.keys()));
   const le=out.lastIndexOf('ENDSEC');
   out=out.slice(0,le)+allLines.join('\n')+'\n'+out.slice(le);
 
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([out],{type:'text/plain'}));
   a.download='colored_output.step';a.click();
+  log('Exported '+colored.length+' colored faces across '+perBody.size+' bodies','log-ok');
 };
 
 // ── Favorites ─────────────────────────────────────────────────
